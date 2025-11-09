@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[11]:
+# In[33]:
 
 
 import requests
+import pandas as pd
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -132,22 +133,71 @@ for matchId in sample_matches:
 print("Sample upload complete. Total sample files:", len(sample_matches))
 
 
-# In[ ]:
+# In[37]:
 
 
+#Transform
+raw_dir = Path("data/raw/matches")
+files = list(raw_dir.glob("*.json"))
+
+rows = []
+for f in files:
+    with open(f) as fp:
+        match = json.load(fp)
+    for p in match["info"]["participants"]:
+        rows.append(p)
+
+df = pd.DataFrame(rows)
+print("Rows:", len(df), "Cols:", len(df.columns))
 
 
-
-# In[ ]:
-
+# In[39]:
 
 
+non_predictive = [
+    "puuid", "summonerId", "summonerName", "riotIdGameName", "riotIdTagline",
+    "participantId", "teamId", "championId", "championName",
+    "matchId", "individualPosition", "teamPosition", "role", "lane"
+]
+df = df.drop(columns=non_predictive, errors="ignore")
 
 
-# In[ ]:
+# In[43]:
 
 
+df["KDA_ratio"] = (df["kills"] + df["assists"]) / df["deaths"].replace(0, 1)
+df["CS_per_min"] = df["totalMinionsKilled"] / (df["timePlayed"] / 60)
+df["Gold_efficiency"] = df["goldSpent"] / df["goldEarned"]
+df["DMG_Gold_ratio"] = df["totalDamageDealtToChampions"] / df["goldEarned"]
+df["Vision_per_min"] = df["visionScore"] / (df["timePlayed"] / 60)
 
+
+# In[45]:
+
+
+top20 = [
+    "kills","deaths","assists","goldEarned","totalDamageDealtToChampions",
+    "totalDamageTaken","visionScore","wardsPlaced","wardsKilled",
+    "champExperience","goldSpent","neutralMinionsKilled","totalMinionsKilled",
+    "damageDealtToObjectives","turretTakedowns","inhibitorTakedowns",
+    "timeCCingOthers","totalHeal","totalTimeSpentDead","killingSprees"
+]
+
+selected_cols = top20 + [
+    "KDA_ratio","CS_per_min","Gold_efficiency","DMG_Gold_ratio","Vision_per_min"
+]
+
+df_tidy = df[selected_cols].copy()
+print(df_tidy.head())
+
+
+# In[47]:
+
+
+out_path = Path("data/processed/tidy_participants.csv")
+out_path.parent.mkdir(parents=True, exist_ok=True)
+df_tidy.to_csv(out_path, index=False)
+print("Saved:", out_path)
 
 
 # In[ ]:
