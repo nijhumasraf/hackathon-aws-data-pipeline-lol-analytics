@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[107]:
+# In[8]:
 
 
 import requests
@@ -14,18 +14,18 @@ import boto3
 from botocore.exceptions import ClientError
 
 
-# In[109]:
+# In[9]:
 
 
 # --- CONFIG ---
-RIOT_API_KEY = "RGAPI-e0b5bf3f-4ef3-4f55-b791-1e0a9e6fc472"
+RIOT_API_KEY = "RGAPI-db8fafe7-e1dd-42fe-901b-3c35ac52538b"
 PUUID = "ietVCTS7Tqi47nsRIhmJoIMtYhIT0rtlALufrc2o03sKfgyIvaWBIdKMS2YO17FqODtYSy010_-dxw"
 S3_BUCKET = "hackathon-s3-rift-rewind-mohammad"
 AWS_REGION = "us-east-1"
 ROUTING = "asia"   # change if needed: americas, europe, asia, sea
 
 
-# In[111]:
+# In[12]:
 
 
 # --- S3 CLIENT ---
@@ -43,7 +43,7 @@ def upload_to_s3(local_path, s3_key):
         raise SystemExit("Exiting: cannot continue without valid S3 client.")
 
 
-# In[113]:
+# In[14]:
 
 
 # --- TIME WINDOW (1 YEAR) ---
@@ -55,7 +55,7 @@ end_ts = int(end_dt.timestamp())
 print("Collecting matches from", start_dt.date(), "to", end_dt.date())
 
 
-# In[115]:
+# In[16]:
 
 
 # --- FETCH MATCH IDS (PAGING, NO BREAK) ---
@@ -89,7 +89,7 @@ while not done:
 print("Total match IDs collected:", len(all_ids))
 
 
-# In[117]:
+# In[17]:
 
 
 # ====== SAVE & UPLOAD INDEX FILE ======
@@ -101,7 +101,7 @@ with open(index_path, "w") as f:
 upload_to_s3(str(index_path), "raw/index/match_ids_year.json")
 
 
-# In[119]:
+# In[20]:
 
 
 # ====== DOWNLOAD MATCHES ======
@@ -165,7 +165,7 @@ for i, matchId in enumerate(all_ids, start=1):
 print(f"All done! Uploaded {success} matches, failed {failed}.")
 
 
-# In[121]:
+# In[22]:
 
 
 # ====== CREATE MATCH-LEVEL TABLE ======
@@ -217,7 +217,7 @@ upload_to_s3(str(out_path), s3_key)
 print(f"Uploaded to S3 path: s3://{S3_BUCKET}/{s3_key}")
 
 
-# In[123]:
+# In[24]:
 
 
 try:
@@ -229,119 +229,160 @@ except Exception as e:
     print("Parquet save skipped for matches:", e)
 
 
-# In[125]:
+# In[48]:
 
-
-#Transform
-raw_dir = Path("data/raw/matches")
-files = list(raw_dir.glob("*.json"))
 
 rows = []
-for f in files:
+for f in Path("data/raw/matches").glob("*.json"):
     with open(f) as fp:
-        match = json.load(fp)
-    for p in match["info"]["participants"]:
-        rows.append(p)
+        m = json.load(fp)
+
+    meta = m.get("metadata", {})
+    info = m.get("info", {})
+    participants = info.get("participants", [])
+
+    for p in participants:
+        rows.append({
+            # context
+            "matchId": meta.get("matchId"),
+            "gameVersion": info.get("gameVersion"),
+            "queueId": info.get("queueId"),
+            "gameDuration": info.get("gameDuration"),  # seconds
+            "championName": p.get("championName"),
+            "teamId": p.get("teamId"),
+            "win": p.get("win"),
+            "winCount": 1 if p.get("win") else 0,
+            "loseCount": 0 if p.get("win") else 1,
+
+            # core stats
+            "kills": p.get("kills"),
+            "deaths": p.get("deaths"),
+            "assists": p.get("assists"),
+            "goldEarned": p.get("goldEarned"),
+            "goldSpent": p.get("goldSpent"),
+            "totalDamageDealtToChampions": p.get("totalDamageDealtToChampions"),
+            "totalDamageTaken": p.get("totalDamageTaken"),
+            "totalMinionsKilled": p.get("totalMinionsKilled"),
+            "neutralMinionsKilled": p.get("neutralMinionsKilled"),
+            "visionScore": p.get("visionScore"),
+            "wardsPlaced": p.get("wardsPlaced"),
+            "wardsKilled": p.get("wardsKilled"),
+            "timeCCingOthers": p.get("timeCCingOthers"),
+            "totalHeal": p.get("totalHeal"),
+            "totalTimeSpentDead": p.get("totalTimeSpentDead"),
+            "killingSprees": p.get("killingSprees"),
+            "damageDealtToObjectives": p.get("damageDealtToObjectives"),
+            "turretTakedowns": p.get("turretTakedowns"),
+            "inhibitorTakedowns": p.get("inhibitorTakedowns"),
+            "champExperience": p.get("champExperience"),
+            "timePlayed": p.get("timePlayed")  # seconds
+        })
 
 df = pd.DataFrame(rows)
 print("Rows:", len(df), "Cols:", len(df.columns))
 
+# --- simple features (safe divisions) ---
+denom_deaths = df["deaths"].replace(0, 1)
+denom_time_min = (df["timePlayed"].replace(0, 1) / 60)
 
-# In[127]:
+df["KDA_ratio"]      = (df["kills"] + df["assists"]) / denom_deaths
+df["CS_per_min"]     = df["totalMinionsKilled"] / denom_time_min
+df["Gold_efficiency"]= df["goldSpent"] / df["goldEarned"].replace(0, 1)
+df["DMG_Gold_ratio"] = df["totalDamageDealtToChampions"] / df["goldEarned"].replace(0, 1)
+df["Vision_per_min"] = df["visionScore"] / denom_time_min
+df["DMG_per_min"]    = df["totalDamageDealtToChampions"] / denom_time_min
+df["CS_per_game"] = df["totalMinionsKilled"] + df["neutralMinionsKilled"]
 
-
-df.columns.tolist()
-
-
-# In[129]:
-
-
-# Non-predictive columns (IDs, names, positions)
-non_predictive = [
-    "puuid", "summonerId", "summonerName", "riotIdGameName", "riotIdTagline",
-    "participantId", "teamId", "championId", "championName",
-    "individualPosition", "teamPosition", "role", "lane"
-]
-
-# Add new calculated (made-up) features
-df["KDA_ratio"] = (df["kills"] + df["assists"]) / df["deaths"].replace(0, 1)
-df["CS_per_min"] = df["totalMinionsKilled"] / (df["timePlayed"] / 60)
-df["Gold_efficiency"] = df["goldSpent"] / df["goldEarned"]
-df["DMG_Gold_ratio"] = df["totalDamageDealtToChampions"] / df["goldEarned"]
-df["Vision_per_min"] = df["visionScore"] / (df["timePlayed"] / 60)
-
-# Top 20 important metrics
-top20 = [
-    "kills","deaths","assists","goldEarned","totalDamageDealtToChampions",
-    "totalDamageTaken","visionScore","wardsPlaced","wardsKilled",
-    "champExperience","goldSpent","neutralMinionsKilled","totalMinionsKilled",
+# --- choose order for the CSV (context → stats → features) ---
+cols = [
+    "matchId","gameVersion","queueId","gameDuration","championName","teamId","win","winCount", "loseCount",
+    "kills","deaths","assists","goldEarned","goldSpent",
+    "totalDamageDealtToChampions","totalDamageTaken",
+    "totalMinionsKilled","neutralMinionsKilled",
+    "visionScore","wardsPlaced","wardsKilled",
+    "timeCCingOthers","totalHeal","totalTimeSpentDead","killingSprees",
     "damageDealtToObjectives","turretTakedowns","inhibitorTakedowns",
-    "timeCCingOthers","totalHeal","totalTimeSpentDead","killingSprees"
+    "champExperience","timePlayed",
+    "KDA_ratio","CS_per_min","CS_per_game","Gold_efficiency","DMG_Gold_ratio","Vision_per_min","DMG_per_min"
 ]
+df_tidy = df[cols].copy()
 
-# Add made-up features list
-madeup = ["KDA_ratio","CS_per_min","Gold_efficiency","DMG_Gold_ratio","Vision_per_min"]
-
-# Human-readable: non-predictive + top20 + made-up
-df_full = df[non_predictive + top20 + madeup].copy()
-
-# Machine-readable: only top20 + made-up
-df_tidy = df[top20 + madeup].copy()
-
-
-# In[131]:
-
-
-df_full.columns.tolist()
-
-
-# In[133]:
-
-
-df_tidy.columns.tolist()
-
-
-# In[135]:
-
-
-# === Save tidy data locally ===
+# --- save locally + upload to analytics/ ---
 out_path = Path("data/processed/tidy_participants.csv")
 out_path.parent.mkdir(parents=True, exist_ok=True)
 df_tidy.to_csv(out_path, index=False)
 print("Saved:", out_path)
 
-# === Upload tidy data to S3 ===
-s3_key = "analytics/tidy_participants.csv"  # analytics = final cleaned data zone
+s3_key = "analytics/tidy_participants.csv"
 upload_to_s3(str(out_path), s3_key)
 print(f"Uploaded to S3 path: s3://{S3_BUCKET}/{s3_key}")
 
 
-# In[137]:
+# In[50]:
 
 
-try:
-    pqt = Path("data/staged/participants.parquet")
-    pqt.parent.mkdir(parents=True, exist_ok=True)
-    df_tidy.to_parquet(pqt, index=False)
-    upload_to_s3(str(pqt), "staged/participants.parquet")
-    print("Saved & uploaded:", pqt)
-except Exception as e:
-    print("Parquet save skipped for participants:", e)
+# ====== ENHANCED CHAMPION SUMMARY TABLE ======
+champ_summary = (
+    df_tidy.groupby("championName", as_index=False)
+    .agg({
+        "winCount": "sum",
+        "loseCount": "sum",
+        "kills": "mean",
+        "deaths": "mean",
+        "assists": "mean",
+        "goldEarned": "mean",
+        "goldSpent": "mean",
+        "KDA_ratio": "mean",
+        "CS_per_min": "mean",
+        "DMG_per_min": "mean",
+        "Vision_per_min": "mean",
+        "Gold_efficiency": "mean",
+        "DMG_Gold_ratio": "mean",
+        "CS_per_game": "mean",
+        "totalDamageDealtToChampions": "mean",
+        "totalDamageTaken": "mean",
+        "totalHeal": "mean",
+        "timeCCingOthers": "mean"
+    })
+)
 
+# basic totals
+champ_summary["totalGames"] = champ_summary["winCount"] + champ_summary["loseCount"]
+champ_summary["winRate"] = 100 * champ_summary["winCount"] / champ_summary["totalGames"]
 
-# In[139]:
+# ---- new advanced columns ----
+# Popularity (how often this champion appears compared to all)
+total_games_all = champ_summary["totalGames"].sum()
+champ_summary["popularity_%"] = 100 * champ_summary["totalGames"] / total_games_all
 
+# KDA_performance = kills + assists - deaths (simple contribution indicator)
+champ_summary["KDA_performance"] = (
+    champ_summary["kills"] + champ_summary["assists"] - champ_summary["deaths"]
+)
 
-# === Save human-readable data (non_predictive + top20 + made-up features) ===
-out_path_full = Path("data/processed/participants_human.csv")
-out_path_full.parent.mkdir(parents=True, exist_ok=True)
-df_full.to_csv(out_path_full, index=False)
-print("Saved:", out_path_full)
+# Damage Efficiency = Damage Dealt per Death
+champ_summary["DMG_per_death"] = (
+    champ_summary["totalDamageDealtToChampions"] / champ_summary["deaths"].replace(0, 1)
+)
 
-# === Upload human-readable data to S3 ===
-s3_key_full = "analytics/participants_human.csv"
-upload_to_s3(str(out_path_full), s3_key_full)
-print(f"Uploaded to S3 path: s3://{S3_BUCKET}/{s3_key_full}")
+# Tankiness = Damage Taken per Death
+champ_summary["DMG_taken_per_death"] = (
+    champ_summary["totalDamageTaken"] / champ_summary["deaths"].replace(0, 1)
+)
+
+# Healing per Minute
+champ_summary["Heal_per_min"] = champ_summary["totalHeal"] / champ_summary["DMG_per_min"].replace(0, 1)
+
+# Crowd Control per Minute (utility)
+champ_summary["CC_per_min"] = champ_summary["timeCCingOthers"] / champ_summary["DMG_per_min"].replace(0, 1)
+
+# ---- save table ----
+out_path = Path("data/processed/champion_summary.csv")
+champ_summary.to_csv(out_path, index=False)
+print("Saved enhanced champion summary:", out_path)
+
+upload_to_s3(str(out_path), "analytics/champion_summary.csv")
+print(f"Uploaded to S3 path: s3://{S3_BUCKET}/analytics/champion_summary.csv")
 
 
 # In[ ]:
